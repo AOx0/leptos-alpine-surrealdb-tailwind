@@ -1,8 +1,10 @@
 #![allow(non_snake_case)]
 
+use anyhow::Result;
 use axum::routing::get;
 use axum::{extract::Path, response::Html, Router, Server};
 use leptos::*;
+use surrealdb::{Datastore, Session};
 
 #[component]
 fn HtmlC<'a>(
@@ -53,11 +55,13 @@ async fn hello(Path(name): Path<String>) -> Html<String> {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
+    let _ds = Datastore::new("memory").await?;
+    let _se = Session::for_db("test", "test");
+
     let router = Router::new().route("/hello/:name", get(hello));
 
-    Server::bind(&"0.0.0.0:8000".parse().unwrap())
+    Ok(Server::bind(&"0.0.0.0:8000".parse().unwrap())
         .serve(router.into_make_service())
-        .await
-        .unwrap()
+        .await?)
 }

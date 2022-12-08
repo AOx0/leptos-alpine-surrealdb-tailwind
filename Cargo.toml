@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.66"
 axum = "0.6.1"
+axum-extra = { version = "0.4.2", features = ["cookie", "cookie-signed", "cookie-private"] }
 http = "0.2.8"
 leptos = { git = "https://github.com/gbj/leptos/", default-features = false, features = ["ssr", "stable"] }
 leptos_dom = { git = "https://github.com/gbj/leptos/", default-features = false, features = ["ssr", "stable"] }

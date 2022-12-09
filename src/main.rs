@@ -1,6 +1,9 @@
 #![allow(non_snake_case, unused_braces)]
 
+use std::time::Duration;
+
 use anyhow::Result;
+use axum::response::Redirect;
 use axum::routing::get;
 use axum::{extract::Path, response::Html, Router, Server};
 use axum_extra::extract::cookie::{Cookie, Key, SameSite};
@@ -67,13 +70,23 @@ fn Home(cx: Scope) -> Element {
                             hover:bg-indigo-700 focus:outline-none focus:shadow-outline-indigo 
                             active:bg-indigo-800" 
                             x-on:click="
-                                login = 'Loading...';
-                                fetch('/api/' + (email) +  '/' + (pass))
-                                    .then(response => response.text())
+                                login = ' ... ';
+                                r_text = false;
+                                fetch('/api/login/' + (email) +  '/' + (pass))
+                                    .then(response => {
+                                        if (response.redirected) {
+                                            window.location.href = response.url;
+                                        } else {
+                                            r_text = true;
+                                            return response.text();
+                                        }
+                                    })
                                     .then(data => { 
-                                        api_res = data; 
                                         login = 'Login';
-                                        $refs.api.classList.remove('invisible');
+                                        if (r_text === true) {
+                                            api_res = data; 
+                                            $refs.api.classList.remove('invisible');
+                                        }
                                     })
                             "
                             x-text="login"
@@ -104,14 +117,18 @@ async fn home() -> Html<String> {
 async fn login(
     Path((email, pass)): Path<(String, String)>,
     jar: PrivateCookieJar,
-) -> Result<(PrivateCookieJar, String), StatusCode> {
+) -> Result<(PrivateCookieJar, Redirect), String> {
+    if email == "daniel" {
+        return Err("An email must be specified".to_owned());
+    }
+
     Ok((
         jar.add({
             let mut a = Cookie::new("email", email.to_owned());
             a.set_same_site(SameSite::Strict);
             a
         }),
-        format!("Logged in email {email} with pass {pass}"),
+        Redirect::permanent("/static/styles.css"),
     ))
 }
 
@@ -140,7 +157,7 @@ async fn main() -> Result<()> {
     };
 
     let router = Router::new()
-        .route("/api/:email/:mail", get(login))
+        .route("/api/login/:email/:mail", get(login))
         .route("/", get(home))
         .nest_service(&format!("/static"), static_service)
         .with_state(Key::generate());

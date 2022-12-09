@@ -1,15 +1,22 @@
 #![allow(non_snake_case, unused_braces)]
 
-use std::time::Duration;
-
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::FromRef;
+use axum::extract::State;
 use axum::response::Redirect;
-use axum::routing::get;
+use axum::routing::{get, post};
+use axum::Json;
 use axum::{extract::Path, response::Html, Router, Server};
 use axum_extra::extract::cookie::{Cookie, Key, SameSite};
 use axum_extra::extract::PrivateCookieJar;
 use http::StatusCode;
 use leptos::*;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use surrealdb::sql::Object;
+use surrealdb::sql::Value;
+use surrealdb::Response;
 use surrealdb::{Datastore, Session};
 
 #[component]
@@ -72,7 +79,13 @@ fn Home(cx: Scope) -> Element {
                             x-on:click="
                                 login = ' ... ';
                                 r_text = false;
-                                fetch('/api/login/' + (email) +  '/' + (pass))
+                                fetch('/api/login', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                        },
+                                        body: JSON.stringify({ pass: pass, email: email }),
+                                    })
                                     .then(response => {
                                         if (response.redirected) {
                                             window.location.href = response.url;
@@ -114,22 +127,56 @@ async fn home() -> Html<String> {
     }))
 }
 
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Data {
+    email: String,
+    pass: String,
+}
+
 async fn login(
-    Path((email, pass)): Path<(String, String)>,
+    State(state): State<AppState>,
     jar: PrivateCookieJar,
+    result: Result<Json<Data>, JsonRejection>,
 ) -> Result<(PrivateCookieJar, Redirect), String> {
-    if email == "daniel" {
-        return Err("An email must be specified".to_owned());
+    let payload = if let Err(error) = result {
+        return Err(format!("{}", error));
+    } else {
+        result.unwrap()
+    };
+
+    if payload.email.trim().is_empty() {
+        return Err("Email must have a value".to_owned());
     }
 
-    Ok((
-        jar.add({
-            let mut a = Cookie::new("email", email.to_owned());
-            a.set_same_site(SameSite::Strict);
-            a
-        }),
-        Redirect::permanent("/static/styles.css"),
-    ))
+    if payload.pass.trim().is_empty() {
+        return Err("Password must have a value".to_owned());
+    }
+
+    let matches = state
+        .sql1(format!(
+            "SELECT * FROM users WHERE email = '{}' AND pass = '{}'",
+            payload.email, payload.pass
+        ))
+        .await;
+
+    if matches.is_err() {
+        return Err("There was an error retreiving data from the db".to_owned());
+    } else {
+        if matches.unwrap().len() == 1 {
+            Ok((
+                jar.add({
+                    let mut a = Cookie::new("email", payload.email.to_owned());
+                    a.set_same_site(SameSite::Strict);
+                    a
+                }),
+                Redirect::permanent("/static/styles.css"),
+            ))
+        } else {
+            return Err("There is no email/password match".to_owned());
+        }
+    }
 }
 
 /// Convert the Errors from ServeDir to a type that implements IntoResponse
@@ -137,17 +184,110 @@ async fn handle_file_error(err: std::io::Error) -> (StatusCode, String) {
     (StatusCode::NOT_FOUND, format!("File Not Found: {}", err))
 }
 
-struct AppState {
+#[derive(Clone)]
+struct AppState(Arc<InnerState>);
+
+struct InnerState {
     db: Datastore,
     se: Session,
+    ke: Key,
+}
+
+impl std::ops::Deref for AppState {
+    type Target = InnerState;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+// this impl tells `SignedCookieJar` how to access the key from our state
+impl FromRef<AppState> for Key {
+    fn from_ref(state: &AppState) -> Self {
+        state.0.ke.clone()
+    }
+}
+
+impl AppState {
+    async fn sql(&self, sql: impl Into<String>) -> Result<Vec<Vec<Object>>> {
+        let res: Vec<Response> = self.db.execute(&sql.into(), &self.se, None, false).await?;
+        let mut result: Vec<Value> = vec![];
+        let mut final_res = vec![];
+
+        if res.is_empty() {
+            return Err(anyhow!("The query didn't return"));
+        }
+
+        for i in res.into_iter() {
+            result.push(i.result?);
+        }
+
+        if result.is_empty() {
+            return Err(anyhow!("The query didn't return"));
+        }
+
+        for i in result.into_iter() {
+            if let surrealdb::sql::Value::Array(surrealdb::sql::Array(val)) = i {
+                let mut res = vec![];
+                for j in val.into_iter() {
+                    if let surrealdb::sql::Value::Object(obj) = j {
+                        res.push(obj);
+                    } else {
+                        return Err(anyhow!("Found non obj {}", j.to_string()));
+                    }
+                }
+                final_res.push(res);
+            } else {
+                return Err(anyhow!("Found non Some<Array> {}", i.to_string()));
+            }
+        }
+
+        Ok(final_res)
+    }
+
+    async fn sql1(&self, sql: impl Into<String>) -> Result<Vec<Object>> {
+        let final_res = self.sql(sql).await?;
+        if final_res.len() > 1 {
+            return Err(anyhow!("The query returned more that one array"));
+        }
+        Ok(final_res.into_iter().next().unwrap())
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let apps = AppState {
+    let apps = AppState(Arc::new(InnerState {
         db: Datastore::new("memory").await?,
         se: Session::for_db("test", "test"),
-    };
+        ke: Key::generate(),
+    }));
+
+    let res = apps
+        .sql(
+            "
+        CREATE users SET user = 'Daniel', age = 13, email = 'myemail@gmail.com', pass = '1234'; 
+        CREATE users SET user = 'David', age = 16, email = 'msd@gmail.com', pass = '1234';
+        ",
+        )
+        .await?;
+
+    for response in res {
+        for user in response.into_iter() {
+            println!("{}", user.to_string());
+        }
+    }
+
+    let res = apps
+        .sql1(
+            "
+        SELECT * FROM users;
+        ",
+        )
+        .await?;
+
+    for user in res.into_iter() {
+        println!("{}", user.to_string());
+    }
 
     let static_service = {
         use axum::error_handling::HandleError;
@@ -157,10 +297,10 @@ async fn main() -> Result<()> {
     };
 
     let router = Router::new()
-        .route("/api/login/:email/:mail", get(login))
+        .route("/api/login", post(login))
         .route("/", get(home))
         .nest_service(&format!("/static"), static_service)
-        .with_state(Key::generate());
+        .with_state(apps);
 
     Ok(Server::bind(&"0.0.0.0:8000".parse().unwrap())
         .serve(router.into_make_service())

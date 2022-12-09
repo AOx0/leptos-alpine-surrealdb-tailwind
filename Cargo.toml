@@ -16,3 +16,4 @@ serde = { version = "1.0.149", features = ["derive"] }
 surrealdb = { version = "1.0.0-beta.8", default-features = false, features = ["kv-mem", "parallel"] }
 tokio = { version = "1.23.0", features = ["full"] }
 tower-http = { version = "0.3.5", features = ["fs"] }
+uuid = "1.2.2"

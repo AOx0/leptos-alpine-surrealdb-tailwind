@@ -1,5 +1,6 @@
 #![allow(non_snake_case, unused_braces)]
 
+use anyhow::Context;
 use anyhow::{anyhow, Result};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::FromRef;
@@ -7,17 +8,18 @@ use axum::extract::State;
 use axum::response::Redirect;
 use axum::routing::{get, post};
 use axum::Json;
-use axum::{extract::Path, response::Html, Router, Server};
+use axum::{extract::ConnectInfo, extract::Path, response::Html, Router, Server};
 use axum_extra::extract::cookie::{Cookie, Key, SameSite};
 use axum_extra::extract::PrivateCookieJar;
 use http::StatusCode;
 use leptos::*;
-use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use surrealdb::sql::Object;
 use surrealdb::sql::Value;
 use surrealdb::Response;
 use surrealdb::{Datastore, Session};
+use uuid::Uuid;
 
 #[component]
 fn HtmlC<'a>(
@@ -136,6 +138,7 @@ struct Data {
 }
 
 async fn login(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     jar: PrivateCookieJar,
     result: Result<Json<Data>, JsonRejection>,
@@ -154,29 +157,59 @@ async fn login(
         return Err("Password must have a value".to_owned());
     }
 
-    let matches = state
-        .sql1(format!(
+    let query_result = state
+        .sql1_expect1(format!(
             "SELECT * FROM users WHERE email = '{}' AND pass = '{}'",
             payload.email, payload.pass
         ))
         .await;
 
-    if matches.is_err() {
-        return Err("There was an error retreiving data from the db".to_owned());
-    } else {
-        if matches.unwrap().len() == 1 {
-            Ok((
-                jar.add({
-                    let mut a = Cookie::new("email", payload.email.to_owned());
-                    a.set_same_site(SameSite::Strict);
-                    a
-                }),
-                Redirect::permanent("/static/styles.css"),
-            ))
-        } else {
+    let response = if query_result.is_err() {
+        let msg = query_result.unwrap_err().to_string();
+        if msg == "Failed to get first Object of query response" {
             return Err("There is no email/password match".to_owned());
+        } else {
+            return Err("There was an error retreiving data from the db".to_owned());
         }
-    }
+    } else {
+        query_result.unwrap()
+    };
+    let uid = Uuid::new_v4();
+    let query_result = state
+        .sql1_expect1(format!(
+            "CREATE sessions SET token = '{}', user = {}, ip = '{}'",
+            uid,
+            response.get("id").unwrap(),
+            addr.ip().to_string()
+        ))
+        .await;
+
+    let response = if query_result.is_err() {
+        return Err("Failed to communicate with the database".to_string());
+    } else {
+        query_result.unwrap()
+    };
+
+    println!("{}", response.to_string());
+
+    // We remove any existing 'tok' cookie
+    let jar = {
+        let cookie = jar.get("tok");
+        if cookie.is_some() {
+            jar.remove(cookie.unwrap())
+        } else {
+            jar
+        }
+    };
+
+    Ok((
+        jar.add({
+            let mut a = Cookie::new("tok", uid.to_string());
+            a.set_same_site(SameSite::Strict);
+            a
+        }),
+        Redirect::permanent("/static/styles.css"),
+    ))
 }
 
 /// Convert the Errors from ServeDir to a type that implements IntoResponse
@@ -245,12 +278,28 @@ impl AppState {
         Ok(final_res)
     }
 
+    async fn sql1_expect1(&self, sql: impl Into<String>) -> Result<Object> {
+        let res = self.sql1(sql).await?;
+
+        if res.len() > 1 {
+            return Err(anyhow!("Found more than one Object in query"));
+        }
+
+        Ok(res
+            .into_iter()
+            .next()
+            .context("Failed to get first Object of query response")?)
+    }
+
     async fn sql1(&self, sql: impl Into<String>) -> Result<Vec<Object>> {
         let final_res = self.sql(sql).await?;
         if final_res.len() > 1 {
             return Err(anyhow!("The query returned more that one array"));
         }
-        Ok(final_res.into_iter().next().unwrap())
+        Ok(final_res
+            .into_iter()
+            .next()
+            .context("Failed to get the first Array<Object> from query response")?)
     }
 }
 
@@ -262,32 +311,13 @@ async fn main() -> Result<()> {
         ke: Key::generate(),
     }));
 
-    let res = apps
-        .sql(
-            "
+    apps.sql(
+        "
         CREATE users SET user = 'Daniel', age = 13, email = 'myemail@gmail.com', pass = '1234'; 
         CREATE users SET user = 'David', age = 16, email = 'msd@gmail.com', pass = '1234';
         ",
-        )
-        .await?;
-
-    for response in res {
-        for user in response.into_iter() {
-            println!("{}", user.to_string());
-        }
-    }
-
-    let res = apps
-        .sql1(
-            "
-        SELECT * FROM users;
-        ",
-        )
-        .await?;
-
-    for user in res.into_iter() {
-        println!("{}", user.to_string());
-    }
+    )
+    .await?;
 
     let static_service = {
         use axum::error_handling::HandleError;
@@ -303,6 +333,6 @@ async fn main() -> Result<()> {
         .with_state(apps);
 
     Ok(Server::bind(&"0.0.0.0:8000".parse().unwrap())
-        .serve(router.into_make_service())
+        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
         .await?)
 }

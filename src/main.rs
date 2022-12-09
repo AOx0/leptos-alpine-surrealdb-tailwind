@@ -3,7 +3,7 @@
 use anyhow::Result;
 use axum::routing::get;
 use axum::{extract::Path, response::Html, Router, Server};
-use axum_extra::extract::cookie::{Cookie, Key};
+use axum_extra::extract::cookie::{Cookie, Key, SameSite};
 use axum_extra::extract::PrivateCookieJar;
 use http::StatusCode;
 use leptos::*;
@@ -67,7 +67,7 @@ fn Home(cx: Scope) -> Element {
                             hover:bg-indigo-700 focus:outline-none focus:shadow-outline-indigo 
                             active:bg-indigo-800" 
                             x-on:click="
-                                login = 'loading...';
+                                login = 'Loading...';
                                 fetch('/api/' + (email) +  '/' + (pass))
                                     .then(response => response.text())
                                     .then(data => { 
@@ -106,7 +106,11 @@ async fn login(
     jar: PrivateCookieJar,
 ) -> Result<(PrivateCookieJar, String), StatusCode> {
     Ok((
-        jar.add(Cookie::new("email", email.to_owned())),
+        jar.add({
+            let mut a = Cookie::new("email", email.to_owned());
+            a.set_same_site(SameSite::Strict);
+            a
+        }),
         format!("Logged in email {email} with pass {pass}"),
     ))
 }

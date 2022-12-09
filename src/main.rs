@@ -19,29 +19,13 @@ fn HtmlC<'a>(
                 <link rel="stylesheet" href="/static/styles.css"/>
                 <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer init />
             </head>
-            <body x-data=x_data class="bg-gray-100 h-screen font-sans dark:bg-gray-700 text-black dark:text-white">
+            <body
+                x-data=x_data
+                class="bg-gray-100 h-screen font-sans dark:bg-gray-700 text-black dark:text-white"
+            >
             {children}
             </body>
         </html>
-    }
-}
-
-#[component]
-fn Hello(cx: Scope, name: String) -> Element {
-    view! {cx,
-        <HtmlC x-data="{value: '', count: 0, place: 'Type here...' }">
-            <div class="flex flex-col items-center">
-                <h1 class="text-xl">"Hola "{&name}</h1>
-                <div>
-                    <input type="text" x-model="value" x-bind:placeholder="place" />
-                </div>
-                <div class="flex">
-                    <p x-text="count"></p>
-                    <button class="ml-2" x-on:click="count++">"inc"</button>
-                    <p x-text="value"></p>
-                </div>
-            </div>
-        </HtmlC>
     }
 }
 
@@ -112,12 +96,6 @@ async fn home() -> Html<String> {
     }))
 }
 
-async fn hello(Path(name): Path<String>) -> Html<String> {
-    Html(render(|cx| {
-        view! {cx, <Hello name=name /> }
-    }))
-}
-
 async fn login(Path((email, pass)): Path<(String, String)>) -> String {
     format!("Logged in email {email} with pass {pass}")
 }
@@ -140,7 +118,6 @@ async fn main() -> Result<()> {
     };
 
     let router = Router::new()
-        .route("/hello/:name", get(hello))
         .route("/api/:email/:mail", get(login))
         .route("/", get(home))
         .nest_service(&format!("/static"), static_service);

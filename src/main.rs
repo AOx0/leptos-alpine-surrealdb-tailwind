@@ -99,29 +99,23 @@ fn Home(cx: Scope) -> Element {
     }
 }
 
-async fn home() -> Html<String> {
-    Html(
-        "<!DOCTYPE html>".to_owned()
-            + &render_to_string(|cx| {
-                view! {cx,
-                    <Home />
-                }
-            })
+pub fn render(view: impl FnOnce(Scope) -> Element + 'static) -> String {
+    "<!DOCTYPE html>".to_owned()
+        + &render_to_string(view)
             .replace("<!--/-->", "")
-            .replace("<!--#-->", ""),
-    )
+            .replace("<!--#-->", "")
 }
+
+async fn home() -> Html<String> {
+    Html(render(|cx| {
+        view! {cx, <Home /> }
+    }))
+}
+
 async fn hello(Path(name): Path<String>) -> Html<String> {
-    Html(
-        "<!DOCTYPE html>".to_owned()
-            + &render_to_string(|cx| {
-                view! {cx,
-                    <Hello name=name/>
-                }
-            })
-            .replace("<!--/-->", "")
-            .replace("<!--#-->", ""),
-    )
+    Html(render(|cx| {
+        view! {cx, <Hello name=name /> }
+    }))
 }
 
 async fn login(Path((email, pass)): Path<(String, String)>) -> String {

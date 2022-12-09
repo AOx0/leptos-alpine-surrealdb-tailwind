@@ -3,6 +3,8 @@
 use anyhow::Result;
 use axum::routing::get;
 use axum::{extract::Path, response::Html, Router, Server};
+use axum_extra::extract::cookie::{Cookie, Key};
+use axum_extra::extract::PrivateCookieJar;
 use http::StatusCode;
 use leptos::*;
 use surrealdb::{Datastore, Session};
@@ -45,21 +47,18 @@ fn ValueInput<'a>(cx: Scope, name: &'a str, ty: &'a str, var: &'a str) -> Elemen
 #[component]
 fn Home(cx: Scope) -> Element {
     view! {cx,
-        <HtmlC x-data="{pass: '', email: '', api_res: ''}">
+        <HtmlC x-data="{pass: '', email: '', api_res: 'A', login: 'Login'}">
         <div class="container mx-auto px-4 py-8">
             <h1 class="text-3xl font-bold text-gray-900">"Welcome to our site!"</h1>
             <div class="mt-4">
                 <h2 class="text-xl font-bold text-gray-800">"Login"</h2>
                 <p
+                    x-transition
                     class="font-bold text-red-500 bg-red-500 bg-opacity-20
-                        rounded-lg border border-red-500 text-xs mt-4 p-4 hidden"
+                        rounded-lg border border-red-500 text-xs mt-4 p-4 text-center invisible"
                     x-text="api_res"
-                    x-show="api_res.length !== 0"
-                    x-init="() => {
-                        $el.classList.remove('hidden'); 
-                        $el.classList.add('block'); 
-                    }"
-                />
+                    x-ref="api"
+                >"A"</p>
                 <div class="mt-4">
                     <ValueInput name="Email" ty="email" var="email"/>
                     <ValueInput name="Password" ty="password" var="pass"/>
@@ -68,10 +67,16 @@ fn Home(cx: Scope) -> Element {
                             hover:bg-indigo-700 focus:outline-none focus:shadow-outline-indigo 
                             active:bg-indigo-800" 
                             x-on:click="
+                                login = 'loading...';
                                 fetch('/api/' + (email) +  '/' + (pass))
                                     .then(response => response.text())
-                                    .then(data => api_res = data)
+                                    .then(data => { 
+                                        api_res = data; 
+                                        login = 'Login';
+                                        $refs.api.classList.remove('invisible');
+                                    })
                             "
+                            x-text="login"
                         >
                             "Login"
                         </button>
@@ -96,8 +101,14 @@ async fn home() -> Html<String> {
     }))
 }
 
-async fn login(Path((email, pass)): Path<(String, String)>) -> String {
-    format!("Logged in email {email} with pass {pass}")
+async fn login(
+    Path((email, pass)): Path<(String, String)>,
+    jar: PrivateCookieJar,
+) -> Result<(PrivateCookieJar, String), StatusCode> {
+    Ok((
+        jar.add(Cookie::new("email", email.to_owned())),
+        format!("Logged in email {email} with pass {pass}"),
+    ))
 }
 
 /// Convert the Errors from ServeDir to a type that implements IntoResponse
@@ -105,10 +116,17 @@ async fn handle_file_error(err: std::io::Error) -> (StatusCode, String) {
     (StatusCode::NOT_FOUND, format!("File Not Found: {}", err))
 }
 
+struct AppState {
+    db: Datastore,
+    se: Session,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _ds = Datastore::new("memory").await?;
-    let _se = Session::for_db("test", "test");
+    let apps = AppState {
+        db: Datastore::new("memory").await?,
+        se: Session::for_db("test", "test"),
+    };
 
     let static_service = {
         use axum::error_handling::HandleError;
@@ -120,7 +138,8 @@ async fn main() -> Result<()> {
     let router = Router::new()
         .route("/api/:email/:mail", get(login))
         .route("/", get(home))
-        .nest_service(&format!("/static"), static_service);
+        .nest_service(&format!("/static"), static_service)
+        .with_state(Key::generate());
 
     Ok(Server::bind(&"0.0.0.0:8000".parse().unwrap())
         .serve(router.into_make_service())

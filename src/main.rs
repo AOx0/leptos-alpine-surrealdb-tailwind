@@ -75,11 +75,16 @@ fn Home(cx: Scope) -> Element {
                     <ValueInput name="Email" ty="email" var="email"/>
                     <ValueInput name="Password" ty="password" var="pass"/>
                     <div class="flex justify-end">
-                        <button class="px-4 py-2 font-bold text-white bg-indigo-500 rounded-lg
-                            hover:bg-indigo-700 focus:outline-none focus:shadow-outline-indigo 
-                            active:bg-indigo-800" 
+                        <button class="px-4 py-2
+                            enabled:opacity-100         disabled:opacity-50
+                            enabled:hover:bg-indigo-700 disabled:hover:bg-indigo-500 
+                            font-bold text-white bg-indigo-500 rounded-lg
+                            focus:outline-none focus:shadow-outline-indigo 
+                            active:bg-indigo-800"
+                            x-data="{ benable: true }"
+                            x-bind:disabled="!benable"
                             x-on:click="
-                                login = ' ... ';
+                                benable = false;
                                 r_text = false;
                                 fetch('/api/login', {
                                         method: 'POST',
@@ -97,11 +102,11 @@ fn Home(cx: Scope) -> Element {
                                         }
                                     })
                                     .then(data => { 
-                                        login = 'Login';
                                         if (r_text === true) {
                                             api_res = data; 
                                             $refs.api.classList.remove('invisible');
                                         }
+                                        benable = true;
                                     })
                             "
                             x-text="login"
@@ -143,6 +148,8 @@ async fn login(
     jar: PrivateCookieJar,
     result: Result<Json<Data>, JsonRejection>,
 ) -> Result<(PrivateCookieJar, Redirect), String> {
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
     let payload = if let Err(error) = result {
         return Err(format!("{}", error));
     } else {
@@ -177,7 +184,7 @@ async fn login(
     let uid = Uuid::new_v4();
     let query_result = state
         .sql1_expect1(format!(
-            "CREATE sessions SET token = '{}', user = {}, ip = '{}'",
+            "CREATE sessions SET token = '{}', user = {}, ip = '{}', time = time::now()",
             uid,
             response.get("id").unwrap(),
             addr.ip().to_string()

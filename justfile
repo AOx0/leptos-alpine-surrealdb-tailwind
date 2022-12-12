@@ -1,6 +1,6 @@
 build:
 	tailwindcss -c ./tailwind.config.js -i ./static/main.css -o ./static/styles.css
-	cargo build
+	cargo clippy 
 	
 run: build
 	cargo run

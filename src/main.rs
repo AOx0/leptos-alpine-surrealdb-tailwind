@@ -1,223 +1,23 @@
 #![allow(non_snake_case, unused_braces)]
 
-use anyhow::Context;
-use anyhow::{anyhow, Result};
-use axum::extract::rejection::JsonRejection;
-use axum::extract::FromRef;
-use axum::extract::State;
+use anyhow::{anyhow, Context, Result};
+use axum::extract::{ConnectInfo, FromRef, State};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Redirect};
+use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
-use axum::{extract::ConnectInfo, extract::Path, response::Html, Router, Server};
-use axum::{Json, RequestExt};
-use axum_extra::extract::cookie::{Cookie, Key, SameSite};
-use axum_extra::extract::PrivateCookieJar;
+use axum::{Json, RequestExt, Router, Server};
+use axum_extra::extract::{
+    cookie::{Cookie, Key, SameSite},
+    PrivateCookieJar,
+};
 use http::{Request, StatusCode};
-use leptos::*;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use surrealdb::sql::Object;
-use surrealdb::sql::Value;
-use surrealdb::Response;
-use surrealdb::{Datastore, Session};
-use uuid::Uuid;
+use surrealdb::{
+    sql::{Object, Value},
+    Datastore, Response, Session,
+};
 
-#[component]
-fn HtmlC<'a>(
-    cx: Scope,
-    x_data: Option<&'a str>,
-    children: Box<dyn Fn() -> Vec<Element>>,
-) -> Element {
-    view! { cx,
-        <html class="">
-            <head>
-                <link rel="stylesheet" href="/public/static/styles.css"/>
-                <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer init />
-            </head>
-            <body
-                x-data=x_data
-                class="bg-gray-100 h-screen font-sans dark:bg-gray-700 text-black dark:text-white"
-            >
-            {children}
-            </body>
-        </html>
-    }
-}
-
-#[component]
-fn ValueInput<'a>(cx: Scope, name: &'a str, ty: &'a str, var: &'a str) -> Element {
-    view! {cx,
-        <div class="mb-4">
-            <label for={name} class="block font-bold text-gray-700 mb-2">
-                {name} ": "
-            </label>
-            <input type={ty} id={name} x-model={var} class="w-full py-2 px-3 bg-gray-200 rounded-lg
-                border border-gray-300 focus:outline-none focus:border-indigo-500" required/>
-        </div>
-    }
-}
-
-#[component]
-fn Home(cx: Scope) -> Element {
-    view! {cx,
-        <HtmlC x-data="{pass: '', email: '', api_res: 'A', login: 'Login'}">
-        <div class="container mx-auto px-4 py-8">
-            <h1 class="text-3xl font-bold text-gray-900">"Welcome to our site!"</h1>
-            <div class="mt-4">
-                <h2 class="text-xl font-bold text-gray-800">"Login"</h2>
-                <p
-                    x-transition
-                    class="font-bold text-red-500 bg-red-500 bg-opacity-20
-                        rounded-lg border border-red-500 text-xs mt-4 p-4 text-center invisible"
-                    x-text="api_res"
-                    x-ref="api"
-                >"A"</p>
-                <div class="mt-4">
-                    <ValueInput name="Email" ty="email" var="email"/>
-                    <ValueInput name="Password" ty="password" var="pass"/>
-                    <div class="flex justify-end">
-                        <button class="px-4 py-2
-                            enabled:opacity-100         disabled:opacity-50
-                            enabled:hover:bg-indigo-700 disabled:hover:bg-indigo-500 
-                            font-bold text-white bg-indigo-500 rounded-lg
-                            focus:outline-none focus:shadow-outline-indigo 
-                            active:bg-indigo-800"
-                            x-data="{ benable: true }"
-                            x-bind:disabled="!benable"
-                            x-on:click="
-                                benable = false;
-                                r_text = false;
-                                fetch('/api/public/login', {
-                                        method: 'POST',
-                                        headers: {
-                                            'Content-Type': 'application/json',
-                                        },
-                                        body: JSON.stringify({ pass: pass, email: email }),
-                                    })
-                                    .then(response => {
-                                        if (response.redirected) {
-                                            window.location.href = response.url;
-                                        } else {
-                                            r_text = true;
-                                            return response.text();
-                                        }
-                                    })
-                                    .then(data => { 
-                                        if (r_text === true) {
-                                            api_res = data; 
-                                            $refs.api.classList.remove('invisible');
-                                        }
-                                        benable = true;
-                                    })
-                            "
-                            x-text="login"
-                        >
-                            "Login"
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-        </HtmlC>
-    }
-}
-
-pub fn render(view: impl FnOnce(Scope) -> Element + 'static) -> String {
-    "<!DOCTYPE html>".to_owned()
-        + &render_to_string(view)
-            .replace("<!--/-->", "")
-            .replace("<!--#-->", "")
-}
-
-async fn home() -> Html<String> {
-    Html(render(|cx| {
-        view! {cx, <Home /> }
-    }))
-}
-
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct Data {
-    email: String,
-    pass: String,
-}
-
-async fn login(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(state): State<AppState>,
-    jar: PrivateCookieJar,
-    result: Result<Json<Data>, JsonRejection>,
-) -> Result<(PrivateCookieJar, Redirect), String> {
-    let payload = if let Err(error) = result {
-        return Err(format!("{}", error));
-    } else {
-        result.unwrap()
-    };
-
-    if payload.email.trim().is_empty() {
-        return Err("Email must have a value".to_owned());
-    }
-
-    if payload.pass.trim().is_empty() {
-        return Err("Password must have a value".to_owned());
-    }
-
-    let query_result = state
-        .sql1_expect1(format!(
-            "SELECT * FROM users WHERE email = '{}' AND crypto::argon2::compare(pass, '{}')",
-            payload.email, payload.pass
-        ))
-        .await;
-
-    let response = if query_result.is_err() {
-        let msg = query_result.unwrap_err().to_string();
-        if msg == "Failed to get first Object of query response" {
-            return Err("There is no email/password match".to_owned());
-        } else {
-            return Err("There was an error retreiving data from the db".to_owned());
-        }
-    } else {
-        query_result.unwrap()
-    };
-    let uid = Uuid::new_v4();
-    let query_result = state
-        .sql1_expect1(format!(
-            "CREATE sessions SET token = '{}', user = {}, ip = '{}', time = time::now()",
-            uid,
-            response.get("id").unwrap(),
-            addr.ip().to_string()
-        ))
-        .await;
-
-    let response = if query_result.is_err() {
-        return Err("Failed to communicate with the database".to_string());
-    } else {
-        query_result.unwrap()
-    };
-
-    println!("{}", response.to_string());
-
-    // We remove any existing 'tok' cookie
-    let jar = {
-        let cookie = jar.get("tok");
-        if cookie.is_some() {
-            jar.remove(cookie.unwrap())
-        } else {
-            jar
-        }
-    };
-
-    Ok((
-        jar.add({
-            let mut a = Cookie::new("tok", uid.to_string());
-            a.set_same_site(SameSite::Strict);
-            a.set_path("/");
-            a
-        }),
-        Redirect::permanent("/hello"),
-    ))
-}
+mod api;
+mod routes;
 
 /// Convert the Errors from ServeDir to a type that implements IntoResponse
 async fn handle_file_error(err: std::io::Error) -> (StatusCode, String) {
@@ -225,9 +25,9 @@ async fn handle_file_error(err: std::io::Error) -> (StatusCode, String) {
 }
 
 #[derive(Clone)]
-struct AppState(Arc<InnerState>);
+pub struct AppState(std::sync::Arc<InnerState>);
 
-struct InnerState {
+pub struct InnerState {
     db: Datastore,
     se: Session,
     ke: Key,
@@ -237,7 +37,7 @@ impl std::ops::Deref for AppState {
     type Target = InnerState;
 
     fn deref(&self) -> &Self::Target {
-        &*self.0
+        &self.0
     }
 }
 
@@ -292,10 +92,9 @@ impl AppState {
             return Err(anyhow!("Found more than one Object in query"));
         }
 
-        Ok(res
-            .into_iter()
+        res.into_iter()
             .next()
-            .context("Failed to get first Object of query response")?)
+            .context("Failed to get first Object of query response")
     }
 
     async fn sql1(&self, sql: impl Into<String>) -> Result<Vec<Object>> {
@@ -303,10 +102,10 @@ impl AppState {
         if final_res.len() > 1 {
             return Err(anyhow!("The query returned more that one array"));
         }
-        Ok(final_res
+        final_res
             .into_iter()
             .next()
-            .context("Failed to get the first Array<Object> from query response")?)
+            .context("Failed to get the first Array<Object> from query response")
     }
 }
 
@@ -345,17 +144,17 @@ where
     if logged.await.is_err() {
         Redirect::temporary("/").into_response()
     } else {
-        return next.run(req).await;
+        next.run(req).await
     }
 }
 
 async fn hello() -> &'static str {
-    return "Hello!";
+    "Hello!"
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let state = AppState(Arc::new(InnerState {
+    let state = AppState(std::sync::Arc::new(InnerState {
         db: Datastore::new("memory").await?,
         se: Session::for_db("test", "test"),
         ke: Key::generate(),
@@ -375,10 +174,10 @@ async fn main() -> Result<()> {
     );
 
     let router = Router::new()
-        .route("/api/public/login", post(login))
-        .route("/", get(home))
+        .route("/api/public/login", post(api::login::login))
+        .route("/", get(routes::login::home))
         .route("/hello", get(hello))
-        .nest_service(&format!("/public/static"), static_service)
+        .nest_service("/public/static", static_service)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             handle_auth,
@@ -386,6 +185,6 @@ async fn main() -> Result<()> {
         .with_state(state);
 
     Ok(Server::bind(&"0.0.0.0:8000".parse().unwrap())
-        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+        .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await?)
 }

@@ -5,13 +5,14 @@ use anyhow::{anyhow, Result};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::FromRef;
 use axum::extract::State;
-use axum::response::Redirect;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Redirect};
 use axum::routing::{get, post};
-use axum::Json;
 use axum::{extract::ConnectInfo, extract::Path, response::Html, Router, Server};
+use axum::{Json, RequestExt};
 use axum_extra::extract::cookie::{Cookie, Key, SameSite};
 use axum_extra::extract::PrivateCookieJar;
-use http::StatusCode;
+use http::{Request, StatusCode};
 use leptos::*;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -30,7 +31,7 @@ fn HtmlC<'a>(
     view! { cx,
         <html class="">
             <head>
-                <link rel="stylesheet" href="/static/styles.css"/>
+                <link rel="stylesheet" href="/public/static/styles.css"/>
                 <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer init />
             </head>
             <body
@@ -86,7 +87,7 @@ fn Home(cx: Scope) -> Element {
                             x-on:click="
                                 benable = false;
                                 r_text = false;
-                                fetch('/api/login', {
+                                fetch('/api/public/login', {
                                         method: 'POST',
                                         headers: {
                                             'Content-Type': 'application/json',
@@ -148,8 +149,6 @@ async fn login(
     jar: PrivateCookieJar,
     result: Result<Json<Data>, JsonRejection>,
 ) -> Result<(PrivateCookieJar, Redirect), String> {
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
     let payload = if let Err(error) = result {
         return Err(format!("{}", error));
     } else {
@@ -166,7 +165,7 @@ async fn login(
 
     let query_result = state
         .sql1_expect1(format!(
-            "SELECT * FROM users WHERE email = '{}' AND pass = '{}'",
+            "SELECT * FROM users WHERE email = '{}' AND crypto::argon2::compare(pass, '{}')",
             payload.email, payload.pass
         ))
         .await;
@@ -213,9 +212,10 @@ async fn login(
         jar.add({
             let mut a = Cookie::new("tok", uid.to_string());
             a.set_same_site(SameSite::Strict);
+            a.set_path("/");
             a
         }),
-        Redirect::permanent("/static/styles.css"),
+        Redirect::permanent("/hello"),
     ))
 }
 
@@ -310,34 +310,80 @@ impl AppState {
     }
 }
 
+async fn handle_auth<B>(
+    State(state): State<AppState>,
+    mut req: Request<B>,
+    next: Next<B>,
+) -> axum::response::Response
+where
+    B: Send + 'static,
+{
+    let path = req.uri().path();
+    if path == "/" || path.contains("public") {
+        return next.run(req).await;
+    }
+
+    let logged = async {
+        let jar = req
+            .extract_parts_with_state::<PrivateCookieJar, _>(&state)
+            .await?;
+
+        let tok = jar.get("tok").context("Did not find the token")?;
+
+        // This call yields an error if the sql statement did not return
+        // exactly one result. Hence, if this is an error no token was found
+        state
+            .sql1_expect1(format!(
+                "SELECT * FROM sessions WHERE token = '{}'",
+                tok.value()
+            ))
+            .await?;
+
+        anyhow::Ok(())
+    };
+
+    if logged.await.is_err() {
+        Redirect::temporary("/").into_response()
+    } else {
+        return next.run(req).await;
+    }
+}
+
+async fn hello() -> &'static str {
+    return "Hello!";
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let apps = AppState(Arc::new(InnerState {
+    let state = AppState(Arc::new(InnerState {
         db: Datastore::new("memory").await?,
         se: Session::for_db("test", "test"),
         ke: Key::generate(),
     }));
 
-    apps.sql(
+    state.sql(
         "
-        CREATE users SET user = 'Daniel', age = 13, email = 'myemail@gmail.com', pass = '1234'; 
-        CREATE users SET user = 'David', age = 16, email = 'msd@gmail.com', pass = '1234';
+        CREATE users SET user = 'Daniel', age = 13, email = 'myemail@gmail.com', pass = crypto::argon2::generate('1234'); 
+        CREATE users SET user = 'David', age = 16, email = 'msd@gmail.com', pass = crypto::argon2::generate('1234');
         ",
     )
     .await?;
 
-    let static_service = {
-        use axum::error_handling::HandleError;
-        use tower_http::services::ServeDir;
-
-        HandleError::new(ServeDir::new("./static"), handle_file_error)
-    };
+    let static_service = axum::error_handling::HandleError::new(
+        tower_http::services::ServeDir::new("./static"),
+        handle_file_error,
+    );
 
     let router = Router::new()
-        .route("/api/login", post(login))
+        .route("/api/public/login", post(login))
         .route("/", get(home))
-        .nest_service(&format!("/static"), static_service)
-        .with_state(apps);
+        .route("/hello", get(hello))
+        .nest_service(&format!("/public/static"), static_service)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            handle_auth,
+        ))
+        .with_state(state);
 
     Ok(Server::bind(&"0.0.0.0:8000".parse().unwrap())
         .serve(router.into_make_service_with_connect_info::<SocketAddr>())
